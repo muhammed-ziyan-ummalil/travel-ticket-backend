@@ -1,36 +1,47 @@
-from django.http import HttpResponse  # Import HttpResponse for returning HTTP responses
-from django.shortcuts import redirect  # Import redirect for redirecting to other views
-from rest_framework.decorators import api_view, authentication_classes, permission_classes  # Import decorators for API views, authentication, and permissions
-from rest_framework.permissions import IsAuthenticated  # Import IsAuthenticated permission class
-from rest_framework.authentication import TokenAuthentication  # Import TokenAuthentication for token-based authentication
-from rest_framework.response import Response  # Import Response for returning API responses
-from rest_framework import status  # Import status for HTTP status codes
+from datetime import date, datetime  # For date operations
+from django.contrib.auth import authenticate  # For user authentication
+from django.contrib.auth.hashers import make_password  # For hashing passwords
+from django.contrib.auth.models import User  # For user model
+from django.core.mail import send_mail  # For sending emails
+from django.db.models import Q  # For complex queries
+from django.http import HttpResponse  # For returning HTTP responses
+from django.shortcuts import redirect  # For redirecting to other views
+from rest_framework import status  # For HTTP status codes
+from rest_framework.authentication import TokenAuthentication  # For token-based authentication
+from rest_framework.authtoken.models import Token  # For token-based authentication
+from rest_framework.decorators import (
+    api_view,
+    authentication_classes,
+    permission_classes,
+)  # For API views, authentication, and permissions
+from rest_framework.permissions import AllowAny, IsAuthenticated  # For permission classes
+from rest_framework.response import Response  # For returning API responses
 from rest_framework.status import (
     HTTP_200_OK,
     HTTP_201_CREATED,
     HTTP_400_BAD_REQUEST,
     HTTP_404_NOT_FOUND,
     HTTP_500_INTERNAL_SERVER_ERROR,
-)  # Import specific HTTP status codes
-from django.contrib.auth.models import User  # Import User model for user authentication
-from django.contrib.auth import authenticate  # Import authenticate for user authentication
-from django.contrib.auth.hashers import make_password  # Import make_password for hashing passwords
-from rest_framework.authtoken.models import Token  # Import Token model for token-based authentication
-from django.core.mail import send_mail  # Import send_mail for sending emails
-from datetime import date  # Import date for date operations
-from .models import TravelApplication  # Import TravelApplication model
-from rest_framework.decorators import api_view, permission_classes  # Import decorators for API views and permissions
-from rest_framework.permissions import IsAuthenticated  # Import IsAuthenticated permission class
-from rest_framework.response import Response  # Import Response for returning API responses
-from rest_framework.status import HTTP_400_BAD_REQUEST, HTTP_404_NOT_FOUND, HTTP_200_OK  # Import specific HTTP status codes
-from .models import TravelApplication  # Import TravelApplication model
-from .models import TravelApplication, EmployeeProfile, ManagerProfile, Profile, AdminUser  # Import models for travel application, employee, manager, profile, and admin user
-from .serializers import (AdminCreateSerializer, ProfileInfoSerializer, AdminDetailSerializer,
-                        ManagerDetailSerializer, EmployeeDetailSerializer, 
-                        EmployeeTravelRequestViewSerializer, ManagerTravelApprovalSerializer,
-                        AdminTravelOverviewSerializer, TravelApplicationSerializer)  # Import serializers for various models
-from .serializers import TravelRequestSerializer  # Import TravelRequestSerializer
-from django.db.models import Q
+)  # For specific HTTP status codes
+
+from .models import (
+    AdminUser,
+    EmployeeProfile,
+    ManagerProfile,
+    Profile,
+    TravelApplication,
+)  # For models
+from .serializers import (
+    AdminCreateSerializer,
+    AdminDetailSerializer,
+    AdminTravelOverviewSerializer,
+    EmployeeDetailSerializer,
+    EmployeeTravelRequestViewSerializer,
+    ManagerDetailSerializer,
+    TravelApplicationSerializer,
+)  # For serializers
+from django.utils.dateparse import parse_date
+from django.db import transaction
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
@@ -64,27 +75,38 @@ def employee_view_request(request, request_id):
 
 @api_view(["PUT"])
 @permission_classes([IsAuthenticated])
-def employee_edit_request(request, request_id):
-    """
-    Allows an employee to edit their travel request by ID.
-    """
+def employee_update_request(request, request_id):
     try:
-        travel_request = TravelApplication.objects.get(id=request_id)  # Get the travel request by ID
-    except TravelApplication.DoesNotExist:
-        return Response({"error": "Travel request not found."}, status=HTTP_404_NOT_FOUND)  # Return error if travel request is not found
+        travel_request = TravelApplication.objects.get(id=request_id)
+        
+        # Updated condition to include "update" status
+        if travel_request.status not in ["pending", "requested_for_info", "update"]:
+            return Response({"error": "Only pending, requested-for-info, or update requests can be modified."},
+                            status=status.HTTP_400_BAD_REQUEST)
 
-    serializer = EmployeeTravelRequestViewSerializer(travel_request, data=request.data, partial=True)  # Serialize the travel request with partial update
-    if serializer.is_valid():
-        serializer.save()  # Save the updated travel request
-        return Response(
-            {
+        serializer = EmployeeTravelRequestViewSerializer(travel_request, data=request.data, partial=True)
+        if serializer.is_valid():
+            # Handle status transitions
+            if travel_request.status in ["requested_for_info", "update"]:
+                travel_request.status = "pending"
+            
+            serializer.save()
+
+            subject = "Employee updated request"
+            message ="Employee has updated the request"
+            recipient_list = ["employee@gmail.com"]
+            from_email="no-reply@gmail.com"
+            send_mail(subject,message,from_email,recipient_list)
+
+            return Response({
                 "message": "Travel request updated successfully.",
                 "data": serializer.data,
-            },
-            status=HTTP_200_OK
-        )  # Return success message with serialized data and HTTP 200 OK status
-    return Response(serializer.errors, status=HTTP_400_BAD_REQUEST)  # Return validation errors with HTTP 400 BAD REQUEST status
-
+            }, status=status.HTTP_200_OK)
+        else:
+            return Response({"error": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
+    except TravelApplication.DoesNotExist:
+        return Response({"error": "Travel request not found."}, status=status.HTTP_404_NOT_FOUND)
+        
 @api_view(["PUT"])
 @permission_classes([IsAuthenticated])
 def employee_cancel_request(request, request_id):
@@ -104,185 +126,206 @@ def employee_cancel_request(request, request_id):
     travel_request.is_closed = True  # Mark the travel request as closed
     travel_request.save()  # Save the updated travel request
 
+    subject = "Request cancelled"
+    message ="Your request has been closed"
+    recipient_list = ["manager@gmail.com"]
+    from_email="no-reply@gmail.com"
+    send_mail(subject,message,from_email,recipient_list)
+
     return Response({"message": "Travel request cancelled successfully."}, status=HTTP_200_OK)  # Return success message with HTTP 200 OK status
+
+
+
+
+from datetime import datetime, date
+from rest_framework.decorators import api_view, authentication_classes, permission_classes
+from rest_framework.response import Response
+from rest_framework import status
+from rest_framework.authentication import TokenAuthentication
+from rest_framework.permissions import IsAuthenticated
+from .models import EmployeeProfile, ManagerProfile, TravelApplication
+from .serializers import TravelApplicationSerializer
 
 
 @api_view(["POST"])
 @authentication_classes([TokenAuthentication])
 @permission_classes([IsAuthenticated])
 def employee_submit_request(request):
-    """
-    Allows an employee to submit a new travel request.
-    """
+    """Handles employee travel request submission"""
     try:
-        employee = EmployeeProfile.objects.get(profile__user=request.user)  # Get the employee profile of the authenticated user
+        #  Get the authenticated user's profile
+        employee = EmployeeProfile.objects.get(profile__user=request.user)
     except EmployeeProfile.DoesNotExist:
-        return Response({"error": "Employee profile not found."}, status=HTTP_404_NOT_FOUND)  # Return error if employee profile is not found
+        return Response({"error": "Employee profile not found."}, status=status.HTTP_404_NOT_FOUND)
 
+    # Extract data from request
     data = request.data
     start_date_str = data.get("start_date")
     end_date_str = data.get("end_date")
+    manager_id = data.get("manager")
 
+    #  Validate mandatory fields
     if not start_date_str or not end_date_str:
-        return Response({"error": "Start date and end date are required."}, status=HTTP_400_BAD_REQUEST)  # Return error if start date or end date is missing
+        return Response({"error": "Start date and end date are required."}, status=status.HTTP_400_BAD_REQUEST)
 
+    #  Date parsing and validation
     try:
-        start_date = date.fromisoformat(start_date_str)
-        end_date = date.fromisoformat(end_date_str)
+        start_date = datetime.strptime(start_date_str, "%Y-%m-%d").date()
+        end_date = datetime.strptime(end_date_str, "%Y-%m-%d").date()
     except ValueError:
-        return Response({"error": "Invalid date format. Use YYYY-MM-DD."}, status=HTTP_400_BAD_REQUEST)  # Return error if date format is invalid
+        return Response({"error": "Invalid date format. Use YYYY-MM-DD."}, status=status.HTTP_400_BAD_REQUEST)
 
-    if start_date < date.today():
-        return Response({"error": "Start date must be in the future."}, status=HTTP_400_BAD_REQUEST)  # Return error if start date is in the past
+    if start_date < date.today() or end_date <= start_date:
+        return Response({"error": "Invalid date range."}, status=status.HTTP_400_BAD_REQUEST)
 
-    if end_date <= start_date:
-        return Response({"error": "End date must be after start date."}, status=HTTP_400_BAD_REQUEST)  # Return error if end date is before or same as start date
+    # Validate and assign manager
+    manager = employee.manager  # Default manager
+    if manager_id:
+        try:
+            manager_id = int(manager_id)  # Convert manager_id to integer
+            manager = ManagerProfile.objects.get(id=manager_id)
+        except (ValueError, ManagerProfile.DoesNotExist):
+            return Response({"error": "Invalid manager ID."}, status=status.HTTP_404_NOT_FOUND)
 
-    serializer = EmployeeTravelRequestViewSerializer(data=data)
+    #  Prepare data for travel request
+    travel_request_data = {
+        "employee": employee.id,
+        "manager": manager.id,
+        "from_location": data.get("from_location"),
+        "to_location": data.get("to_location"),
+        "travel_mode": data.get("travel_mode"),
+        "start_date": start_date,
+        "end_date": end_date,
+        "lodging_required": data.get("lodging_required", False),
+        "hotel_preference": data.get("hotel_preference", ""),
+        "purpose": data.get("purpose"),
+        "additional_notes": data.get("additional_notes", ""),
+    }
+
+    #  Use TravelApplicationSerializer to validate and save the travel request
+    serializer = TravelApplicationSerializer(data=travel_request_data)
     if serializer.is_valid():
-        travel_request = serializer.save(employee=employee, manager=employee.manager)  # Save the travel request with employee and manager info
-        return Response(
-            {
-                "message": "Travel request submitted successfully.",
-                "data": EmployeeTravelRequestViewSerializer(travel_request).data,
-            },
-            status=HTTP_201_CREATED
-        )  # Return success message with serialized data and HTTP 201 CREATED status
-    return Response(serializer.errors, status=HTTP_400_BAD_REQUEST)  # Return validation errors with HTTP 400 BAD REQUEST status
+        travel_request = serializer.save(employee=employee, manager=manager)
+        return Response({
+            "message": "Travel request submitted successfully.",
+            "data": serializer.data,
+        }, status=status.HTTP_201_CREATED)
+
+    #  Return errors if invalid
+    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
-@api_view(["PUT"])
-@permission_classes([IsAuthenticated])
-def employee_resubmit_request(request, request_id):
-    """
-    Allows an employee to resubmit a travel request if marked as 'requested_for_info'.
-    """
-    try:
-        travel_request = TravelApplication.objects.get(id=request_id)  # Get the travel request by ID
-    except TravelApplication.DoesNotExist:
-        return Response({"error": "Travel request not found."}, status=HTTP_404_NOT_FOUND)  # Return error if travel request is not found
 
-    if travel_request.status != "pending":
-        return Response({"error": "Only requests requiring more info can be resubmitted."}, status=HTTP_400_BAD_REQUEST)  # Return error if request is not pending
 
-    if not request.data:
-        return Response({"error": "At least one field must be updated before resubmission."}, status=HTTP_400_BAD_REQUEST)  # Return error if no data is provided
-
-    serializer = EmployeeTravelRequestViewSerializer(travel_request, data=request.data, partial=True)
-    if serializer.is_valid():
-        travel_request.status = "pending"  # Update the status to pending
-        serializer.save()  # Save the updated travel request
-        return Response(
-            {
-                "message": "Travel request resubmitted successfully.",
-                "data": serializer.data,
-            },
-            status=HTTP_200_OK
-        )  # Return success message with serialized data and HTTP 200 OK status
-    return Response(serializer.errors, status=HTTP_400_BAD_REQUEST)  # Return validation errors with HTTP 400 BAD REQUEST status
-
-@api_view(['GET'])
+@api_view(["GET"])
 def manager_view_requests(request):
-    """
-    Manager: View travel requests with optional filters.
-    """
-    try:
-        start_date = request.GET.get('start_date')
-        end_date = request.GET.get('end_date')
-        employee_name = request.GET.get('employee_name')
-        status_filter = request.GET.get('status')
+    start_date = request.GET.get("start_date")
+    end_date = request.GET.get("end_date")
+    employee_name = request.GET.get("employee_name")
+    status_filter = request.GET.get("status")
 
-        requests = TravelApplication.objects.select_related('employee').all()  # Get all travel requests with related employee info
+    requests = TravelApplication.objects.select_related("employee").all()
 
-        if start_date and end_date:
-            requests = requests.filter(start_date__gte=start_date, end_date__lte=end_date)  # Filter requests by date range
-        if employee_name:
-            requests = requests.filter(employee__first_name__icontains=employee_name)  # Filter requests by employee name
-        if status_filter:
-            requests = requests.filter(status=status_filter)  # Filter requests by status
+    if start_date and end_date:
+        requests = requests.filter(start_date__gte=start_date, end_date__lte=end_date)
+    if employee_name:
+        requests = requests.filter(employee__first_name__icontains=employee_name)
+    if status_filter:
+        requests = requests.filter(status=status_filter)
 
-        serializer = EmployeeTravelRequestViewSerializer(requests, many=True)
-        return Response(serializer.data, status=HTTP_200_OK)  # Return serialized data with HTTP 200 OK status
+    serializer = EmployeeTravelRequestViewSerializer(requests, many=True)
+    return Response(serializer.data, status=status.HTTP_200_OK)
 
-    except Exception as e:
-        return Response(
-            {"error": f"Failed to retrieve requests: {str(e)}"},
-            status=HTTP_500_INTERNAL_SERVER_ERROR
-        )  # Return error if an exception occurs
-
-@api_view(['POST'])
+@api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def manager_handle_request(request):
-    """
-    Manager: Approve or Reject a travel request.
-    """
-    request_id = request.data.get('request_id')
-    status = request.data.get('status')
-    reason = request.data.get('reason', '')
+    request_id = request.data.get("request_id")
+    status_action = request.data.get("status")  # approve, reject, or requested_for_info
+    notes = request.data.get("notes", "")  # Optional notes
 
-    if not request_id or status not in ["approved", "rejected"]:
-        return Response({"error": "Invalid request data"}, status=HTTP_400_BAD_REQUEST)  # Return error if request data is invalid
+    if not request_id or status_action not in ["approved", "rejected", "update"]:
+        return Response({"error": "Invalid request data"}, status=status.HTTP_400_BAD_REQUEST)
 
     try:
-        travel_request = TravelApplication.objects.get(id=request_id)  # Get the travel request by ID
-
+        travel_request = TravelApplication.objects.get(id=request_id)
+        
+        # Check if the request is in a state that can be modified
         if travel_request.status != "pending":
-            return Response({"error": "Only pending requests can be modified."}, status=HTTP_400_BAD_REQUEST)  # Return error if request is not pending
+            return Response({"error": "Only pending requests can be modified."}, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Update the request based on the action
+        if status_action == "approved":
+            travel_request.status = "approved"
+            travel_request.manager_notes = notes  # Save optional notes
+        elif status_action == "rejected":
+            travel_request.status = "rejected"
+            travel_request.manager_notes = notes  # Save optional notes
+        elif status_action == "update":
+            travel_request.status = "update"
+            travel_request.manager_notes = notes  # Save optional notes
+        
+        travel_request.save()
+        subject = f"Request {status_action}"
+        message =f"Your request has been {status_action}"
+        recipient_list = ["employee@gmail.com"]
+        from_email="no-reply@gmail.com"
+        send_mail(subject,message,from_email,recipient_list)
 
-        travel_request.status = status  # Update the status
-
-        if status == "rejected":
-            if not reason:
-                return Response({"error": "Rejection reason is required."}, status=HTTP_400_BAD_REQUEST)  # Return error if rejection reason is missing
-            travel_request.rejection_reason = reason  # Update the rejection reason
-            travel_request.is_closed = True  # Mark the travel request as closed
-
-        travel_request.save()  # Save the updated travel request
-
-        return Response({"message": f"Request {status} successfully"}, status=HTTP_200_OK)  # Return success message with HTTP 200 OK status
-
+        return Response({"message": f"Request {status_action} successfully"}, status=status.HTTP_200_OK)
     except TravelApplication.DoesNotExist:
-        return Response({"error": "Travel request not found."}, status=HTTP_404_NOT_FOUND)  # Return error if travel request is not found
+        return Response({"error": "Travel request not found."}, status=status.HTTP_404_NOT_FOUND)
 
+@api_view(["GET"])
+def admin_view_requests(request):
+    start_date = request.GET.get("start_date")
+    end_date = request.GET.get("end_date")
+    employee_name = request.GET.get("employee_name")
+    status_filter = request.GET.get("status")
 
+    requests = TravelApplication.objects.select_related("employee").all()
 
-@api_view(['GET'])
+    if start_date and end_date:
+        requests = requests.filter(start_date__gte=start_date, end_date__lte=end_date)
+    if employee_name:
+        requests = requests.filter(employee__first_name__icontains=employee_name)
+    if status_filter:
+        requests = requests.filter(status=status_filter)
+
+    serializer = EmployeeTravelRequestViewSerializer(requests, many=True)
+    return Response(serializer.data, status=status.HTTP_200_OK)
+
+@api_view(["GET"])
 def get_travel_requests(request, request_id=None):
-    """
-    Admin: View all travel requests with filters and sorting or get details of a specific request.
-    """
     try:
         if request_id:
-            travel_request = TravelApplication.objects.select_related('employee').get(id=request_id)  # Get the travel request by ID with related employee info
+            travel_request = TravelApplication.objects.select_related("employee").get(id=request_id)
             serializer = EmployeeTravelRequestViewSerializer(travel_request)
-            return Response(serializer.data, status=HTTP_200_OK)  # Return serialized data with HTTP 200 OK status
-        else:
-            start_date = request.GET.get('start_date')
-            end_date = request.GET.get('end_date')
-            employee_name = request.GET.get('employee_name')
-            status_filter = request.GET.get('status')
-            order_by = request.GET.get('order_by', 'id')
+            return Response(serializer.data, status=status.HTTP_200_OK)
+        
+        start_date = request.GET.get("start_date")
+        end_date = request.GET.get("end_date")
+        employee_name = request.GET.get("employee_name")
+        status_filter = request.GET.get("status")
+        order_by = request.GET.get("order_by", "id")
 
-            requests = TravelApplication.objects.select_related('employee').all()  # Get all travel requests with related employee info
+        requests = TravelApplication.objects.select_related("employee").all()
 
-            if start_date and end_date:
-                requests = requests.filter(start_date__gte=start_date, end_date__lte=end_date)  # Filter requests by date range
-            if employee_name:
-                requests = requests.filter(employee__first_name__icontains=employee_name)  # Filter requests by employee name
-            if status_filter:
-                requests = requests.filter(status=status_filter)  # Filter requests by status
+        if start_date and end_date:
+            requests = requests.filter(start_date__gte=start_date, end_date__lte=end_date)
+        if employee_name:
+            requests = requests.filter(employee__first_name__icontains=employee_name)
+        if status_filter:
+            requests = requests.filter(status=status_filter)
 
-            requests = requests.order_by(order_by)  # Order requests by specified field
-            serializer = EmployeeTravelRequestViewSerializer(requests, many=True)
-            return Response(serializer.data, status=HTTP_200_OK)  # Return serialized data with HTTP 200 OK status
+        requests = requests.order_by(order_by)
+        serializer = EmployeeTravelRequestViewSerializer(requests, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
 
     except TravelApplication.DoesNotExist:
-        return Response({"error": "Travel request not found."}, status=HTTP_404_NOT_FOUND)  # Return error if travel request is not found
+        return Response({"error": "Travel request not found."}, status=status.HTTP_404_NOT_FOUND)
     except Exception as e:
-        return Response(
-            {"error": f"Failed to retrieve travel requests: {str(e)}"},
-            status=HTTP_500_INTERNAL_SERVER_ERROR
-        )  # Return error if an exception occurs
+        return Response({"error": f"Failed to retrieve travel requests: {str(e)}"},
+                        status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 @api_view(['PUT'])
@@ -295,45 +338,78 @@ def update_travel_request_status(request, request_id):
         new_status = request.data.get("status")  # Get the new status from the request data
 
         if not new_status:
-            return Response({"error": "Status is required."}, status=HTTP_400_BAD_REQUEST)  # Return error if status is not provided
+            return Response({"error": "Status is required."}, status=HTTP_400_BAD_REQUEST)
+        
+        # Check if new_status is either "pending" or "update"
+        if new_status.lower() == "pending" or new_status.lower() == "update":
+            travel_request.status = new_status.lower()  # Update the status (lowercase for consistency)
+            travel_request.save()  # Save the updated travel request
 
-        travel_request.status = new_status  # Update the status
-        travel_request.save()  # Save the updated travel request
+            subject = "Updated Request"
+            message ="The request from the employee has been updated."
+            recipient_list = ["manager@gmail.com"]
+            from_email="no-reply@gmail.com"
+            send_mail(subject,message,from_email,recipient_list)
 
-        return Response(
-            {"message": "Status updated successfully.", "new_status": new_status},
-            status=HTTP_200_OK
-        )  # Return success message with new status and HTTP 200 OK status
+            return Response(
+                {"message": "Status updated successfully.", "new_status": travel_request.status},
+                status=HTTP_200_OK
+            )
+        else:
+            return Response({"error": "Status must be either 'pending' or 'update'."}, status=HTTP_400_BAD_REQUEST)
 
     except TravelApplication.DoesNotExist:
-        return Response({"error": "Travel request not found."}, status=HTTP_404_NOT_FOUND)  # Return error if travel request is not found
+        return Response({"error": "Travel request not found."}, status=HTTP_404_NOT_FOUND)
 
     except Exception as e:
-        return Response({"error": f"Failed to update status: {str(e)}"}, status=HTTP_500_INTERNAL_SERVER_ERROR)  # Return error if an exception occurs
+        return Response({"error": f"Failed to update status: {str(e)}"}, status=HTTP_500_INTERNAL_SERVER_ERROR)
 
 
-@api_view(['DELETE'])
+@api_view(['PUT'])
 def process_and_close_travel_request(request, request_id):
     """
-    Delete an approved travel request (mark as closed).
+    Mark the admin status of a travel request as 'closed' and update admin notes.
     """
     try:
-        travel_request = TravelApplication.objects.get(id=request_id)  # Get the travel request by ID
+        # Get the travel request by ID
+        travel_request = TravelApplication.objects.get(id=request_id)
 
-        if travel_request.status != "approved":
+        # Check if the request is already approved before closing
+        if travel_request.status.lower() != "approved":
             return Response(
                 {"error": "Only approved requests can be closed."},
-                status=HTTP_400_BAD_REQUEST
-            )  # Return error if request is not approved
+                status=HTTP_400_BAD_REQUEST,
+            )
 
-        travel_request.delete()  # Delete the travel request
-        return Response({"message": "Approved travel request closed successfully."}, status=HTTP_200_OK)  # Return success message with HTTP 200 OK status
+        # Get admin note from the request data (optional)
+        admin_note = request.data.get("admin_note", "").strip()
+
+        # Update admin_status to 'closed' and set admin_note if provided
+        travel_request.admin_status = "closed"
+        if admin_note:
+            travel_request.admin_notes = admin_note
+
+        travel_request.save()
+
+        return Response(
+            {
+                "message": "Request successfully closed.",
+                "new_status": travel_request.admin_status,
+                "admin_notes": travel_request.admin_notes,
+            },
+            status=HTTP_200_OK,
+        )
 
     except TravelApplication.DoesNotExist:
-        return Response({"error": "Travel request not found."}, status=HTTP_404_NOT_FOUND)  # Return error if travel request is not found
-
+        return Response(
+            {"error": "Travel request not found."},
+            status=HTTP_404_NOT_FOUND,
+        )
     except Exception as e:
-        return Response({"error": f"Error occurred: {str(e)}"}, status=HTTP_500_INTERNAL_SERVER_ERROR)  # Return error if an exception occurs
+        return Response(
+            {"error": f"Failed to close request: {str(e)}"},
+            status=HTTP_500_INTERNAL_SERVER_ERROR,
+        )
 
 
 @api_view(['GET'])
@@ -411,13 +487,14 @@ def request_additional_info(request, request_id):
         return Response({"error": f"Failed to request additional info: {str(e)}"}, status=HTTP_500_INTERNAL_SERVER_ERROR)  # Return error if an exception occurs
     
 @api_view(['POST'])
+@permission_classes([AllowAny]) 
 def create_admin(request):
     """
     Create a new admin user (multiple allowed).
     """
-    serializer = AdminCreateSerializer(data=request.data)  # Serialize the admin creation data
+    serializer = AdminCreateSerializer(data=request.data)
     if not serializer.is_valid():
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)  # Return validation errors with HTTP 400 BAD REQUEST status
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
     validated_data = serializer.validated_data
     username = validated_data.get("username")
@@ -425,77 +502,109 @@ def create_admin(request):
     email = validated_data.get("email")
 
     if User.objects.filter(email=email).exists():
-        return Response({"error": "Email already exists."}, status=status.HTTP_400_BAD_REQUEST)  # Return error if email already exists
+        return Response({"error": "Email already exists."}, status=status.HTTP_400_BAD_REQUEST)
 
     try:
-        user = User.objects.create_user(username=username, password=password, email=email)  # Create a new user
+        with transaction.atomic():
+            #  Create User
+            user = User.objects.create_user(username=username, password=password, email=email)
 
-        admin = AdminUser.objects.create(
-            user=user,
-            username=username,
-            password=make_password(password),
-            email=email
-        )  # Create a new admin user
+            #  Create Profile with admin role
+            profile = Profile.objects.create(user=user, role="admin", status="active")
+
+            #  Create AdminUser instance
+            admin = AdminUser.objects.create(
+                user=user,
+                username=username,
+                password=make_password(password),
+                email=email
+            )
 
         return Response({
             "message": "Admin created successfully.",
             "admin": AdminDetailSerializer(admin).data
-        }, status=status.HTTP_201_CREATED)  # Return success message with serialized admin data and HTTP 201 CREATED status
+        }, status=status.HTTP_201_CREATED)
 
     except Exception as e:
-        return Response({"error": f"An error occurred while creating admin: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)  # Return error if an exception occurs
-
-
-@api_view(['POST'])
-def admin_login(request):
-    """
-    Admin login view with token authentication.
-    """
-    username = request.data.get('username')
-    password = request.data.get('password')
-
-    if not username or not password:
-        return Response({"error": "Username and password are required."}, status=status.HTTP_400_BAD_REQUEST)  # Return error if username or password is missing
-
-    user = authenticate(username=username, password=password)  # Authenticate the user
-
-    if user and hasattr(user, 'admin_info'):
-        token, _ = Token.objects.get_or_create(user=user)  # Get or create a token for the user
-        return Response({"message": "Login successful", "token": token.key}, status=status.HTTP_200_OK)  # Return success message with token and HTTP 200 OK status
-
-    return Response({"error": "Invalid credentials or user is not an admin."}, status=status.HTTP_401_UNAUTHORIZED)  # Return error if credentials are invalid or user is not an admin
-
+        return Response({"error": f"An error occurred while creating admin: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 @api_view(['POST'])
+@permission_classes([AllowAny])
 def user_login(request):
     """
-    Login view for manager and employee roles.
+    Login view for admin, manager, and employee roles.
     """
-    username = request.data.get('username')
+    email = request.data.get('email')
     password = request.data.get('password')
+    role = request.data.get('role')
 
-    if not username or not password:
-        return Response({"error": "Username and password are required."}, status=status.HTTP_400_BAD_REQUEST)  # Return error if username or password is missing
+    if not email or not password or not role:
+        return Response({"error": "Email, password, and role are required."}, status=status.HTTP_400_BAD_REQUEST)
 
-    user = authenticate(username=username, password=password)  # Authenticate the user
-    if not user:
-        return Response({"error": "Invalid credentials."}, status=status.HTTP_401_UNAUTHORIZED)  # Return error if credentials are invalid
+    # Get user by email and check password
+    try:
+        user = User.objects.get(email=email)
+        if not user.check_password(password):
+            return Response({"error": "Invalid credentials."}, status=status.HTTP_401_UNAUTHORIZED)
+    except User.DoesNotExist:
+        return Response({"error": "Invalid credentials."}, status=status.HTTP_401_UNAUTHORIZED)
 
-    profile = Profile.objects.filter(user=user).first()  # Get the user profile
+    # Get user profile
+    profile = Profile.objects.filter(user=user).first()
     if not profile:
-        return Response({"error": "User profile not found."}, status=status.HTTP_404_NOT_FOUND)  # Return error if user profile is not found
+        return Response({"error": "User profile not found."}, status=status.HTTP_404_NOT_FOUND)
 
-    if profile.role not in ["manager", "employee"]:
-        return Response({"error": "Unauthorized user role."}, status=status.HTTP_403_FORBIDDEN)  # Return error if user role is unauthorized
+    if profile.role != role:
+        return Response({"error": f"Incorrect role. User is not a {role}."}, status=status.HTTP_403_FORBIDDEN)
 
-    token, _ = Token.objects.get_or_create(user=user)  # Get or create a token for the user
+    # Generate or get token
+    token, _ = Token.objects.get_or_create(user=user)
 
-    return Response({
+    # Initialize additional fields
+    manager_id = None
+    manager_name = None
+    admin_id = None
+    admin_name = None
+
+    # ✅ Handle Employee Role
+    if profile.role == "employee":
+        employee = getattr(profile, "employee_info", None)
+        if employee and employee.manager:
+            manager_id = employee.manager.id
+            manager_name = f"{employee.manager.first_name} {employee.manager.last_name}"
+
+    # Handle Admin Role
+    elif profile.role == "admin":
+        admin_info = getattr(profile, "admin_info", None)
+        if admin_info:
+            admin_id = admin_info.id
+            admin_name = f"{admin_info.first_name} {admin_info.last_name}"
+
+    #  Prepare response payload
+    response_data = {
         "message": "Login successful",
         "token": token.key,
         "role": profile.role,
-        "status": profile.status
-    }, status=status.HTTP_200_OK)  # Return success message with token, role, status, and HTTP 200 OK status
+        "status": profile.status,
+    }
+
+    # Add admin or manager data as needed
+    if profile.role == "employee":
+        response_data.update({
+            "manager_id": manager_id,
+            "manager_name": manager_name,
+        })
+    elif profile.role == "admin":
+        response_data.update({
+            "admin_id": admin_id,
+            "admin_name": admin_name,
+        })
+    subject = "Login Successful"
+    message ="The user has been logged in"
+    recipient_list = ["admin@gmail.com"]
+    from_email="no-reply@gmail.com"
+    send_mail(subject,message,from_email,recipient_list)
+    return Response(response_data, status=status.HTTP_200_OK)
 
 
 @api_view(['POST'])
@@ -584,6 +693,8 @@ def add_user(request):
             designation=designation,
             manager=manager
         )  # Create a new employee profile
+       
+
         return Response({"message": "Employee created successfully.", "employee": EmployeeDetailSerializer(employee).data},
                         status=status.HTTP_201_CREATED)  # Return success message with serialized employee data and HTTP 201 CREATED status
 
@@ -662,6 +773,12 @@ def close_approved_requests(request, request_id):
         
         travel_request.status = 'closed'  # Update the status to closed
         travel_request.save()  # Save the updated travel request
+
+        subject = "Closed Request"
+        message ="Your request has been closed"
+        recipient_list = ["employee@gmail.com"]
+        from_email="no-reply@gmail.com"
+        send_mail(subject,message,from_email,recipient_list)
         
         return redirect('admin:view-request', request_id=request_id)  # Redirect to the admin view request page
     
@@ -706,12 +823,9 @@ def admin_request_info(request):
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def filter_travel_requests(request):
-    """
-    Allows the admin to filter and sort travel requests based on parameters.
-    """
-    travel_requests = TravelApplication.objects.all()  # Fetch all travel requests
+    travel_requests = TravelApplication.objects.all()
 
-    # Extract filter and sort parameters from query params
+    # Extract filter and sort parameters
     status = request.query_params.get('status')
     employee_id = request.query_params.get('employee_id')
     start_date = request.query_params.get('start_date')
@@ -721,23 +835,23 @@ def filter_travel_requests(request):
 
     # Apply filters
     if status:
-        travel_requests = travel_requests.filter(status=status)  # Filter by status
+        travel_requests = travel_requests.filter(status=status)
     if employee_id:
-        travel_requests = travel_requests.filter(employee_id=employee_id)  # Filter by employee ID
+        travel_requests = travel_requests.filter(employee_id=employee_id)
     if start_date and end_date:
-        travel_requests = travel_requests.filter(Q(start_date__gte=start_date) & Q(end_date__lte=end_date))  # Filter by date range
+        travel_requests = travel_requests.filter(Q(start_date__gte=start_date) & Q(end_date__lte=end_date))
 
     # Apply sorting
     if sort_order == 'asc':
-        travel_requests = travel_requests.order_by(sort_by)  # Sort in ascending order
+        travel_requests = travel_requests.order_by(sort_by)
     else:
-        travel_requests = travel_requests.order_by(f"-{sort_by}")  # Sort in descending order
+        travel_requests = travel_requests.order_by(f"-{sort_by}")
 
     if not travel_requests.exists():
-        return Response({"message": "No matching travel requests found."}, status=HTTP_404_NOT_FOUND)  # Return message if no matching travel requests are found
+        return Response({"message": "No matching travel requests found."}, status=HTTP_404_NOT_FOUND)
 
-    serializer = AdminTravelOverviewSerializer(travel_requests, many=True)  # Serialize the filtered travel requests
+    serializer = AdminTravelOverviewSerializer(travel_requests, many=True)
     return Response({
         "message": "Filtered travel requests fetched successfully.",
         "data": serializer.data
-    }, status=HTTP_200_OK)  # Return success message with serialized data and HTTP 200 OK status
+    }, status=HTTP_200_OK)

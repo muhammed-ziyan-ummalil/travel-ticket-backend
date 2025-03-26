@@ -144,9 +144,8 @@ REST_FRAMEWORK = {
     ),
 }
 
-EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
+# Looking to send emails in production? Check out our Email API/SMTP product!
 EMAIL_HOST = 'sandbox.smtp.mailtrap.io'
 EMAIL_HOST_USER = 'dedbd67761adec'
-EMAIL_HOST_PASSWORD = '********4ad0'
+EMAIL_HOST_PASSWORD = '715c250c474ad0'
 EMAIL_PORT = '2525'
-EMAIL_USE_TLS = True

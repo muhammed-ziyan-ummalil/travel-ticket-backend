@@ -105,12 +105,21 @@ class TravelApplication(models.Model):
         ("pending", "Pending"),
         ("rejected", "Rejected"),
         ("closed", "Closed"),
-        ("update", "Update"),
+        ("update", "Update"),  # For requesting additional info
     ]
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="pending")
 
     is_closed = models.BooleanField(default=False)
     is_resubmitted = models.BooleanField(default=False)
+
+    # Fields to track information requests and responses
+    requested_for_info = models.BooleanField(default=False)  # Indicates if info is requested
+    employee_response = models.TextField(blank=True, null=True)  # Employee's additional response
+    info_requested_date = models.DateField(null=True, blank=True)  # Date when info was requested
+    response_date = models.DateField(null=True, blank=True)  # Date when employee responded
+    
+    # Add field to track if notes are present for any action
+    has_manager_notes = models.BooleanField(default=False)  # Flag to indicate manager has added notes
 
     date_submitted = models.DateField(auto_now_add=True)
     update_submitted_date = models.DateField(null=True, blank=True)
